@@ -1,0 +1,26 @@
+use alienfile;
+
+plugin 'PkgConfig' => 'ggml';
+
+share {
+    requires 'Alien::cmake3' => '0.02';
+
+    start_url 'https://github.com/ggml-org/ggml/archive/refs/heads/master.tar.gz';
+    plugin Download => ();
+    plugin Extract  => 'tar.gz';
+
+    plugin 'Build::CMake' => ();
+
+    build [
+        [
+            '%{cmake}',
+            @{ meta->prop->{plugin_build_cmake}->{args} },
+            '-DGGML_BUILD_TESTS=OFF',
+            '-DGGML_BUILD_EXAMPLES=OFF',
+            '-DBUILD_SHARED_LIBS=ON',
+            '%{.install.extract}',
+        ],
+        '%{make}',
+        '%{make} install',
+    ];
+};

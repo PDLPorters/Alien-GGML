@@ -1,0 +1,4 @@
+Revision history for Alien-GGML
+
+0.001   2026-11-24
+        - Initial cross-platform Alien::Build distribution for ggml.

@@ -1,0 +1,94 @@
+use alienfile;
+
+plugin 'PkgConfig' => 'ggml';
+
+sys {
+    after gather => sub {
+        my ($build) = @_;
+        my $libs = $build->runtime_prop->{libs} // '';
+        $libs .= ' -lggml-base' unless $libs =~ /-lggml-base\b/;
+        $build->runtime_prop->{libs} = $libs;
+    };
+};
+
+share {
+    requires 'Alien::cmake3' => '0.02';
+
+    start_url 'https://github.com/ggml-org/ggml/archive/refs/tags/v1.1.0.tar.gz';
+    plugin Download => ();
+    plugin Extract  => 'tar.gz';
+
+    plugin 'Build::CMake' => ();
+
+    patch [
+        sub {
+            my ($build) = @_;
+            my $root = $build->install_prop->{extract} || '.';
+            my $f = "$root/src/ggml-cpu/ggml-cpu.c";
+            return unless -f $f;
+            open my $in, '<', $f or die "open $f: $!";
+            local $/;
+            my $c = <$in>;
+            close $in;
+            if ($c =~ s/#if _WIN32_WINNT >= 0x0602/#if _WIN32_WINNT >= 0x0602 && defined(THREAD_POWER_THROTTLING_CURRENT_VERSION)/g) {
+                open my $out, '>', $f or die "write $f: $!";
+                print {$out} $c;
+                close $out;
+            }
+            if ($^O eq 'MSWin32') {
+                for my $cm ("$root/CMakeLists.txt", "$root/src/CMakeLists.txt", "$root/src/ggml-cpu/CMakeLists.txt") {
+                    next unless -f $cm;
+                    open my $ci, '<', $cm or die "open $cm: $!";
+                    local $/;
+                    my $txt = <$ci>;
+                    close $ci;
+                    if ($txt =~ s/-Werror[=a-zA-Z0-9_-]*//g) {
+                        open my $co, '>', $cm or die "write $cm: $!";
+                        print {$co} $txt;
+                        close $co;
+                    }
+                }
+            }
+        },
+    ];
+
+    build [
+        [
+            '%{cmake}',
+            @{ meta->prop->{plugin_build_cmake}->{args} },
+            '-DGGML_BUILD_TESTS=OFF',
+            '-DGGML_BUILD_EXAMPLES=OFF',
+            '-DGGML_OPENMP=OFF',
+            '-DGGML_NATIVE=OFF',
+            '-DGGML_FATAL_WARNINGS=OFF',
+            ($^O eq 'MSWin32' ? ('-DGGML_AVX=OFF', '-DGGML_AVX2=OFF', '-DGGML_AVX512=OFF', '-DGGML_FMA=OFF', '-DGGML_F16C=OFF', '-DCMAKE_C_FLAGS=-Wno-error', '-DCMAKE_CXX_FLAGS=-Wno-error') : ()),
+            '-DBUILD_SHARED_LIBS=OFF',
+            '-DCMAKE_POSITION_INDEPENDENT_CODE=ON',
+            '%{.install.extract}',
+        ],
+        '%{make}',
+        '%{make} install',
+    ];
+
+    after gather => sub {
+        my ($build) = @_;
+        require File::Copy;
+        my $prefix = $build->runtime_prop->{prefix};
+        my $stage  = $build->install_prop->{stage};
+        my $libdir = -d "$stage/lib64" ? 'lib64' : 'lib';
+        # On Windows MinGW, ggml installs ggml*.a without the 'lib' prefix
+        for my $src (glob("$stage/$libdir/ggml*.a")) {
+            (my $dst = $src) =~ s{([^/\\]+)$}{lib$1};
+            File::Copy::copy($src, $dst) unless -f $dst;
+        }
+        my @found  = map { s{.*[/\\]lib}{}; s{\.a$}{}; "-l$_" } sort glob("$stage/$libdir/libggml*.a");
+        @found = qw(-lggml -lggml-base -lggml-cpu) unless @found;
+        # Ensure -lggml comes first so static linker resolves symbols cleanly
+        my @ordered = (grep({ $_ eq '-lggml' } @found), grep({ $_ ne '-lggml' } @found));
+        my $extra  = $^O eq 'MSWin32' ? '-lstdc++' : '-lstdc++ -lm -lpthread';
+        my $libs   = "-L$prefix/$libdir " . join(' ', @ordered) . " $extra";
+        $build->runtime_prop->{cflags}      = "-I$prefix/include";
+        $build->runtime_prop->{libs}        = $libs;
+        $build->runtime_prop->{libs_static} = $libs;
+    };
+};

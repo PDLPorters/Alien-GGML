@@ -1,0 +1,70 @@
+name: perl
+on:
+  push:
+    branches:
+      - '**'
+    tags-ignore:
+      - '*'
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  ci:
+    runs-on: ${{ matrix.os }}
+    env:
+      ALIEN_INSTALL_TYPE: ${{ matrix.alien-install-type }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest]
+        perl-version: ['5.40']
+        alien-install-type: [share, system]
+        include:
+          - os: windows-latest
+            perl-version: '5.32'
+            alien-install-type: share
+          - os: windows-latest
+            perl-version: '5.32'
+            alien-install-type: system
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install system ggml (Linux)
+        if: matrix.alien-install-type == 'system' && runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libggml-dev pkg-config
+      - name: Install system ggml (macOS)
+        if: matrix.alien-install-type == 'system' && runner.os == 'macOS'
+        run: |
+          brew install ggml pkg-config
+          echo "PKG_CONFIG_PATH=$(brew --prefix)/lib/pkgconfig:${PKG_CONFIG_PATH:-}" >> "$GITHUB_ENV"
+      - name: Install system ggml (Windows)
+        if: matrix.alien-install-type == 'system' && runner.os == 'Windows'
+        shell: bash
+        run: |
+          vcpkg install ggml:x64-windows
+          VCPKG_PREFIX="$(cygpath -w "$VCPKG_INSTALLATION_ROOT")\\installed\\x64-windows"
+          echo "PKG_CONFIG_PATH=${VCPKG_PREFIX}\\lib\\pkgconfig" >> "$GITHUB_ENV"
+          echo "${VCPKG_PREFIX}\\bin" >> "$GITHUB_PATH"
+      - name: 'ci-dist: target-setup-perl'
+        uses: PDLPorters/devops/github-actions/ci-dist@master
+        with:
+          target-setup-perl: true
+          perl-version: ${{ matrix.perl-version }}
+      - name: 'ci-dist: target-all'
+        uses: PDLPorters/devops/github-actions/ci-dist@master
+        with:
+          target-setup-perl: false
+          target-install-dist-perl-deps: true
+          dist-perl-deps-configure: Alien::Build::MM Alien::cmake3
+          target-test: true
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+
+  build-status:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    if: ${{ always() }}
+    needs: ['ci']
+    steps:
+      - uses: PDLPorters/devops/github-actions/irc-notifications@master
+        with:
+          target-build-status: true
+          needs: ${{ toJSON(needs) }}
